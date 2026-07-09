@@ -467,26 +467,47 @@ function setPaid(y, m, expId, catId, val) {
   else S.payments[k][expId] = parseFloat(val) || 0;
   save();
 }
-function getCatPaid(catId, y, m) {
-  const k = payKey(y, m, catId);
-  return (S.payments[k] && S.payments[k]['__cat__'] != null) ? S.payments[k]['__cat__'] : null;
+// payments stored as: S.payments["YYYY-M-catId"] = [{id, amount, note, date}, ...]
+function getCatPayments(catId, y, m) {
+  var k = payKey(y, m, catId);
+  var val = S.payments[k];
+  if (!val) return [];
+  // migrate old format (object) to array
+  if (!Array.isArray(val)) {
+    var arr = [];
+    Object.keys(val).forEach(function(expId) {
+      if (expId !== '__cat__' && val[expId] > 0) arr.push({id: 'mig_' + expId, amount: val[expId], note: '', date: ''});
+      if (expId === '__cat__' && val[expId] > 0) arr.push({id: 'mig_cat', amount: val[expId], note: '', date: ''});
+    });
+    S.payments[k] = arr;
+    return arr;
+  }
+  return val;
 }
-function setCatPaid(catId, y, m, val) {
-  const k = payKey(y, m, catId);
-  if (!S.payments[k]) S.payments[k] = {};
-  if (val === null || val === '' || isNaN(parseFloat(val))) delete S.payments[k]['__cat__'];
-  else S.payments[k]['__cat__'] = parseFloat(val);
+function addCatPayment(catId, y, m, amount, note, date) {
+  var k = payKey(y, m, catId);
+  if (!Array.isArray(S.payments[k])) S.payments[k] = [];
+  S.payments[k].push({id: 'pay_' + Date.now(), amount: amount, note: note || '', date: date || ''});
   save();
 }
-function catPaidTotal(catId, y, m) {
-  // Category-level payment takes priority over per-expense payments
-  const catVal = getCatPaid(catId, y, m);
-  if (catVal !== null) return catVal;
-  const k = payKey(y, m, catId);
-  if (!S.payments[k]) return 0;
-  return Object.values(S.payments[k]).filter((_, i) => Object.keys(S.payments[k])[i] !== '__cat__').reduce((t, v) => t + (v || 0), 0);
+function deletePayment(catId, payId, y, m) {
+  var k = payKey(y, m, catId);
+  if (!Array.isArray(S.payments[k])) return;
+  S.payments[k] = S.payments[k].filter(function(p) { return p.id !== payId; });
+  save(); render();
 }
-function monthPaidTotal(y, m) { return S.categories.reduce((t, c) => t + catPaidTotal(c.id, y, m), 0); }
+function handleDeletePayment(btn) {
+  var catId = btn.dataset.catid;
+  var payId = btn.dataset.payid;
+  var y = parseInt(btn.dataset.y);
+  var m = parseInt(btn.dataset.m);
+  if (!confirm('¿Eliminar este pago?')) return;
+  deletePayment(catId, payId, y, m);
+}
+function catPaidTotal(catId, y, m) {
+  return getCatPayments(catId, y, m).reduce(function(t, p) { return t + p.amount; }, 0);
+}
+function monthPaidTotal(y, m) { return S.categories.reduce(function(t, c) { return t + catPaidTotal(c.id, y, m); }, 0); }
 
 function loanRemaining(exp) {
   const curDate = new Date(now.getFullYear(), now.getMonth(), 1); let rem = 0;
@@ -532,6 +553,7 @@ function render() {
       <button class="btn" onclick="openCats()">&#128193; Categorías</button>
       <button class="btn" onclick="openImportExport()">&#8645; Exportar / Importar</button>
       <button class="btn" onclick="openPasswordModal()" title="${isPasswordSet() ? 'Contraseña configurada' : 'Sin contraseña'}">${isPasswordSet() ? '🔒' : '🔓'}</button>
+      <button class="btn success" onclick="openPayModal(${S.year},${S.month})">+ Nuevo pago</button>
       <button class="btn primary" onclick="openAdd()">+ Nuevo gasto</button>
     </div>
   </div>
@@ -585,11 +607,9 @@ function render() {
         <span class="period">${MES_F[m]} ${y}${isNow?'<span class="now-dot"></span>':''}</span>
         <button class="btn icon" onclick="nextPeriod()">&#8250;</button>
       </div>
-      <span class="nav-total" style="font-size:12px;color:var(--text-ter)">Ingresa lo que pagaste. Verde = a favor, rojo = debes más.</span>
     </div>`;
     html += renderPayments(y, m);
-    // Wire up payment inputs after DOM is set
-    requestAnimationFrame(function() { wirePayInputs(y, m); });
+
   } else if (S.tab === 'year') {
     html += `<div class="nav-row">
       <div class="nav-center">
@@ -610,6 +630,7 @@ function render() {
   else if (S.modal === 'importexport') renderImportExportModal();
   else if (S.modal === 'syncconfig') renderSyncConfigModal();
   else if (S.modal === 'password') renderPasswordModal();
+  else if (S.modal === 'pay') renderPayModal();
 }
 
 function renderMonthTable(y, m) {
@@ -686,68 +707,111 @@ function renderPayments(y, m) {
   const totalPaid = monthPaidTotal(y, m);
   const td = fmtDiff(totalPaid - totalBudget);
 
-  // Build total bar
   const bar = '<div class="pay-total-bar" id="pay-total-bar">'
     + '<div class="pay-total-item"><div class="pay-total-label">Presupuesto total</div><div class="pay-total-val">' + fmtS(totalBudget) + '</div></div>'
     + '<div class="pay-total-item"><div class="pay-total-label">Total pagado</div><div class="pay-total-val" style="color:var(--success-text)">' + (totalPaid > 0 ? fmtS(totalPaid) : '—') + '</div></div>'
     + '<div class="pay-total-item"><div class="pay-total-label">Por pagar</div><div class="pay-total-val" style="color:var(--warn-text)">' + fmtS(Math.max(0, totalBudget - totalPaid)) + '</div></div>'
     + '<div class="pay-total-item"><div class="pay-total-label">Diferencia</div><div class="pay-total-val ' + td.cls + '">' + (totalPaid > 0 ? td.txt : '—') + '</div></div>'
-    + '</div>';
+    + '</div>'
+    + '<div class="payments-grid" id="pay-grid"></div>';
 
-  let cards = '';
+  // Return bar + empty grid; populate grid via DOM after render
+  setTimeout(function() { buildPayGrid(y, m); }, 0);
+  return bar;
+}
+
+function buildPayGrid(y, m) {
+  var grid = document.getElementById('pay-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
   S.categories.forEach(function(cat) {
-    const catBudget = catMonthTotal(cat.id, y, m);
+    var catBudget = catMonthTotal(cat.id, y, m);
     if (!catBudget) return;
-    const catPaid = catPaidTotal(cat.id, y, m);
-    const catDiff = fmtDiff(catPaid - catBudget);
-    const paid = getCatPaid(cat.id, y, m);
-    const pending = catBudget - catPaid;
+    var payments = getCatPayments(cat.id, y, m);
+    var catPaid = payments.reduce(function(t, p) { return t + p.amount; }, 0);
+    var pending = catBudget - catPaid;
+    var catDiff = fmtDiff(catPaid - catBudget);
 
-    // Expense reference list
-    const exps = S.expenses.filter(function(e) { return e.categoryId === cat.id && amt(e, y, m) > 0; });
-    let expList = '';
-    exps.forEach(function(exp) {
-      const v = amt(exp, y, m);
-      const badge = exp.permanent ? '<span class="badge perm">fijo</span>' : '<span class="badge loan">préstamo</span>';
-      expList += '<div style="display:flex;justify-content:space-between;padding:5px 14px;font-size:12px;color:var(--text-sec);border-bottom:1px solid var(--border)">'
-        + '<span>' + exp.name + badge + '</span>'
-        + '<span style="font-family:var(--mono)">' + fmtS(v) + '</span>'
-        + '</div>';
-    });
+    var card = document.createElement('div');
+    card.className = 'pay-cat-card';
 
-    const pendingTxt = catPaid > 0
+    // Header
+    var head = document.createElement('div');
+    head.className = 'pay-cat-head';
+    head.innerHTML = '<span class="pay-cat-name">' + cat.name + '</span>'
+      + '<span class="pay-cat-summary">'
+      + '<span style="color:var(--text-sec)">Pres: <strong>' + fmtS(catBudget) + '</strong></span>'
+      + '<span style="color:var(--success-text)">Pag: <strong>' + (catPaid > 0 ? fmtS(catPaid) : '—') + '</strong></span>'
+      + '</span>';
+    card.appendChild(head);
+
+    // Payment rows
+    if (payments.length === 0) {
+      var empty = document.createElement('div');
+      empty.style.cssText = 'padding:8px 14px;font-size:12px;color:var(--text-ter)';
+      empty.textContent = 'Sin pagos registrados este mes.';
+      card.appendChild(empty);
+    } else {
+      payments.forEach(function(p) {
+        var row = document.createElement('div');
+        row.className = 'pay-row';
+        row.style.padding = '8px 14px';
+
+        var label = document.createElement('span');
+        label.className = 'pay-name';
+        label.textContent = p.note || 'Pago';
+        row.appendChild(label);
+
+        if (p.date) {
+          var dateEl = document.createElement('span');
+          dateEl.style.cssText = 'font-size:11px;color:var(--text-ter)';
+          dateEl.textContent = p.date;
+          row.appendChild(dateEl);
+        }
+
+        var spacer = document.createElement('span');
+        spacer.style.flex = '1';
+        row.appendChild(spacer);
+
+        var amtEl = document.createElement('span');
+        amtEl.style.cssText = 'font-family:var(--mono);color:var(--success-text);font-weight:500';
+        amtEl.textContent = fmtS(p.amount);
+        row.appendChild(amtEl);
+
+        var delBtn = document.createElement('button');
+        delBtn.className = 'btn sm icon danger';
+        delBtn.style.marginLeft = '8px';
+        delBtn.title = 'Eliminar';
+        delBtn.innerHTML = '&#10005;';
+        (function(cid, pid, yy, mm) {
+          delBtn.addEventListener('click', function() {
+            if (!confirm('¿Eliminar este pago?')) return;
+            deletePayment(cid, pid, yy, mm);
+          });
+        })(cat.id, p.id, y, m);
+        row.appendChild(delBtn);
+
+        card.appendChild(row);
+      });
+    }
+
+    // Footer
+    var footer = document.createElement('div');
+    footer.className = 'pay-cat-footer';
+    footer.setAttribute('data-catfoot', cat.id);
+    var pendingTxt = catPaid > 0
       ? fmtS(Math.abs(pending)) + (pending > 0 ? ' por pagar' : ' a favor')
       : '—';
-    const pendingCls = catPaid > 0 ? (pending > 0 ? 'neg' : 'pos') : '';
-
-    cards += '<div class="pay-cat-card">'
-      + '<div class="pay-cat-head">'
-      + '<span class="pay-cat-name">' + cat.name + '</span>'
-      + '<span class="pay-cat-summary"><span style="color:var(--text-sec)">Presupuesto: <strong>' + fmtS(catBudget) + '</strong></span></span>'
-      + '</div>'
-      + expList
-      + '<div class="pay-row" style="padding:12px 14px;gap:12px;align-items:center;border-top:1px solid var(--border-med)">'
-      + '<span class="pay-name" style="font-weight:500;color:var(--text)">Pago realizado</span>'
-      + '<span class="pay-budgeted" style="color:var(--text-sec);font-size:12px">de ' + fmtS(catBudget) + '</span>'
-      + '<div class="pay-input-wrap">'
-      + '<span style="font-size:12px;color:var(--text-ter)">$</span>'
-      + '<input class="pay-input cat-pay-input" type="number" min="0" placeholder="0"'
-      + ' data-catid="' + cat.id + '" data-budget="' + catBudget + '" data-y="' + y + '" data-m="' + m + '"'
-      + ' value="' + (paid !== null ? paid : '') + '">'
-      + '</div>'
-      + '<span class="pay-diff ' + (paid !== null ? catDiff.cls : 'zero') + '" id="catdiff_' + cat.id + '">'
-      + (paid !== null ? catDiff.txt : '—') + '</span>'
-      + '</div>'
-      + '<div class="pay-cat-footer" data-catfoot="' + cat.id + '">'
-      + '<div class="pay-footer-item"><span class="pay-footer-label">Pagado:</span>'
+    var pendingCls = catPaid > 0 ? (pending > 0 ? 'neg' : 'pos') : '';
+    footer.innerHTML = '<div class="pay-footer-item"><span class="pay-footer-label">Pagado:</span>'
       + '<span class="pay-footer-val" style="color:var(--success-text)">' + (catPaid > 0 ? fmtS(catPaid) : '—') + '</span></div>'
       + '<div class="pay-footer-item"><span class="pay-footer-label">Pendiente:</span>'
-      + '<span class="pay-footer-val ' + pendingCls + '">' + pendingTxt + '</span></div>'
-      + '</div>'
-      + '</div>';
-  });
+      + '<span class="pay-footer-val ' + pendingCls + '">' + pendingTxt + '</span></div>';
+    card.appendChild(footer);
 
-  return bar + '<div class="payments-grid" id="pay-grid">' + cards + '</div>';
+    grid.appendChild(card);
+  });
 }
 
 
@@ -1021,6 +1085,69 @@ function toggleLoanBreakdown() {
       }
     });
   }, 0);
+}
+
+/* ── PAY MODAL ── */
+function openPayModal(y, m, catId) {
+  S.modal = 'pay';
+  S.modal_data = { y: y, m: m, catId: catId || (S.categories[0] && S.categories[0].id) || '' };
+  document.querySelectorAll('.modal-overlay').forEach(function(el) { el.remove(); });
+  renderPayModal();
+}
+
+function renderPayModal() {
+  var d = S.modal_data;
+  var y = d.y, m = d.m;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+
+  var catOptions = '';
+  S.categories.forEach(function(cat) {
+    var budget = catMonthTotal(cat.id, y, m);
+    catOptions += '<option value="' + cat.id + '"' + (cat.id === d.catId ? ' selected' : '') + '>'
+      + cat.name + (budget > 0 ? ' (pres: ' + fmtS(budget) + ')' : '') + '</option>';
+  });
+
+  if (!catOptions) {
+    S.categories.forEach(function(cat) {
+      catOptions += '<option value="' + cat.id + '"' + (cat.id === d.catId ? ' selected' : '') + '>' + cat.name + '</option>';
+    });
+  }
+  if (!catOptions) catOptions = '<option value="">Sin categorías</option>';
+  var today = new Date().toISOString().slice(0, 10);
+
+  var modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.maxWidth = '380px';
+  modal.innerHTML = '<h2>Registrar pago</h2>'
+    + '<div class="fg"><label>Categoría</label><select id="pm-cat">' + catOptions + '</select></div>'
+    + '<div class="fg"><label>Monto pagado ($)</label><input type="number" id="pm-amount" min="0" placeholder="0" autofocus></div>'
+    + '<div class="fg"><label>Concepto / Nota (opcional)</label><input type="text" id="pm-note" placeholder="Ej. Tarjeta HSBC, efectivo..."></div>'
+    + '<div class="fg"><label>Fecha</label><input type="date" id="pm-date" value="' + today + '"></div>'
+    + '<div id="pm-msg" style="font-size:12px;min-height:18px;margin-bottom:4px"></div>'
+    + '<div class="modal-foot">'
+    + '<button class="btn" onclick="closeModal()">Cancelar</button>'
+    + '<button class="btn primary" id="pm-save-btn">Guardar pago</button>'
+    + '</div>';
+
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
+  document.body.appendChild(overlay);
+  setTimeout(function() { var inp = document.getElementById('pm-amount'); if (inp) inp.focus(); }, 50);
+
+  document.getElementById('pm-save-btn').addEventListener('click', function() {
+    var catId = document.getElementById('pm-cat').value;
+    var amount = parseFloat(document.getElementById('pm-amount').value);
+    var note = (document.getElementById('pm-note').value || '').trim();
+    var date = document.getElementById('pm-date').value;
+    var msg = document.getElementById('pm-msg');
+    if (!catId) { msg.innerHTML = '<span style="color:var(--danger-text)">Selecciona una categoría.</span>'; return; }
+    if (!amount || amount <= 0) { msg.innerHTML = '<span style="color:var(--danger-text)">Ingresa un monto válido.</span>'; return; }
+    // Format date for display
+    var displayDate = date ? (function() { var p = date.split('-'); return p[2] + '/' + p[1] + '/' + p[0]; })() : '';
+    addCatPayment(catId, y, m, amount, note, displayDate);
+    closeModal();
+  });
 }
 
 /* ── SYNC CONFIG MODAL ── */
