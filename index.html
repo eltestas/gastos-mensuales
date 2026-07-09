@@ -467,10 +467,24 @@ function setPaid(y, m, expId, catId, val) {
   else S.payments[k][expId] = parseFloat(val) || 0;
   save();
 }
+function getCatPaid(catId, y, m) {
+  const k = payKey(y, m, catId);
+  return (S.payments[k] && S.payments[k]['__cat__'] != null) ? S.payments[k]['__cat__'] : null;
+}
+function setCatPaid(catId, y, m, val) {
+  const k = payKey(y, m, catId);
+  if (!S.payments[k]) S.payments[k] = {};
+  if (val === null || val === '' || isNaN(parseFloat(val))) delete S.payments[k]['__cat__'];
+  else S.payments[k]['__cat__'] = parseFloat(val);
+  save();
+}
 function catPaidTotal(catId, y, m) {
+  // Category-level payment takes priority over per-expense payments
+  const catVal = getCatPaid(catId, y, m);
+  if (catVal !== null) return catVal;
   const k = payKey(y, m, catId);
   if (!S.payments[k]) return 0;
-  return Object.values(S.payments[k]).reduce((t, v) => t + (v || 0), 0);
+  return Object.values(S.payments[k]).filter((_, i) => Object.keys(S.payments[k])[i] !== '__cat__').reduce((t, v) => t + (v || 0), 0);
 }
 function monthPaidTotal(y, m) { return S.categories.reduce((t, c) => t + catPaidTotal(c.id, y, m), 0); }
 
@@ -574,6 +588,8 @@ function render() {
       <span class="nav-total" style="font-size:12px;color:var(--text-ter)">Ingresa lo que pagaste. Verde = a favor, rojo = debes más.</span>
     </div>`;
     html += renderPayments(y, m);
+    // Wire up payment inputs after DOM is set
+    requestAnimationFrame(function() { wirePayInputs(y, m); });
   } else if (S.tab === 'year') {
     html += `<div class="nav-row">
       <div class="nav-center">
@@ -668,95 +684,122 @@ function renderPayments(y, m) {
   if (!S.categories.length) return emptyState('Sin categorías. Agrega gastos primero.');
   const totalBudget = monthTotal(y, m);
   const totalPaid = monthPaidTotal(y, m);
-  const totalDiff = fmtDiff(totalPaid - totalBudget);
+  const td = fmtDiff(totalPaid - totalBudget);
+
+  // Build total bar
+  const bar = '<div class="pay-total-bar" id="pay-total-bar">'
+    + '<div class="pay-total-item"><div class="pay-total-label">Presupuesto total</div><div class="pay-total-val">' + fmtS(totalBudget) + '</div></div>'
+    + '<div class="pay-total-item"><div class="pay-total-label">Total pagado</div><div class="pay-total-val" style="color:var(--success-text)">' + (totalPaid > 0 ? fmtS(totalPaid) : '—') + '</div></div>'
+    + '<div class="pay-total-item"><div class="pay-total-label">Por pagar</div><div class="pay-total-val" style="color:var(--warn-text)">' + fmtS(Math.max(0, totalBudget - totalPaid)) + '</div></div>'
+    + '<div class="pay-total-item"><div class="pay-total-label">Diferencia</div><div class="pay-total-val ' + td.cls + '">' + (totalPaid > 0 ? td.txt : '—') + '</div></div>'
+    + '</div>';
 
   let cards = '';
-  S.categories.forEach(cat => {
-    const exps = S.expenses.filter(e => e.categoryId === cat.id && amt(e, y, m) > 0);
-    if (!exps.length) return;
+  S.categories.forEach(function(cat) {
     const catBudget = catMonthTotal(cat.id, y, m);
+    if (!catBudget) return;
     const catPaid = catPaidTotal(cat.id, y, m);
     const catDiff = fmtDiff(catPaid - catBudget);
-    let payRows = '';
-    exps.forEach(exp => {
+    const paid = getCatPaid(cat.id, y, m);
+    const pending = catBudget - catPaid;
+
+    // Expense reference list
+    const exps = S.expenses.filter(function(e) { return e.categoryId === cat.id && amt(e, y, m) > 0; });
+    let expList = '';
+    exps.forEach(function(exp) {
       const v = amt(exp, y, m);
-      const paid = getPaid(y, m, exp.id, cat.id);
-      const diff = paid !== null ? fmtDiff(paid - v) : null;
-      payRows += `<div class="pay-row">
-        <span class="pay-name">${exp.name}</span>
-        <span class="pay-budgeted">${fmtS(v)}</span>
-        <div class="pay-input-wrap">
-          <span style="font-size:12px;color:var(--text-ter)">$</span>
-          <input class="pay-input" type="number" min="0" placeholder="0"
-            value="${paid !== null ? paid : ''}"
-            onchange="setPaid(${y},${m},'${exp.id}','${cat.id}',this.value);renderPaymentsOnly(${y},${m})"
-            oninput="livePayDiff(this,${v},'diff_${exp.id}')"
-            id="pinput_${exp.id}">
-        </div>
-        <span class="pay-diff ${diff?diff.cls:'zero'}" id="diff_${exp.id}">${diff ? diff.txt : '—'}</span>
-      </div>`;
+      const badge = exp.permanent ? '<span class="badge perm">fijo</span>' : '<span class="badge loan">préstamo</span>';
+      expList += '<div style="display:flex;justify-content:space-between;padding:5px 14px;font-size:12px;color:var(--text-sec);border-bottom:1px solid var(--border)">'
+        + '<span>' + exp.name + badge + '</span>'
+        + '<span style="font-family:var(--mono)">' + fmtS(v) + '</span>'
+        + '</div>';
     });
-    cards += `<div class="pay-cat-card">
-      <div class="pay-cat-head">
-        <span class="pay-cat-name">${cat.name}</span>
-        <span class="pay-cat-summary">
-          <span style="color:var(--text-sec)">Pres: <strong>${fmtS(catBudget)}</strong></span>
-          <span style="color:var(--success-text)">Pag: <strong>${catPaid>0?fmtS(catPaid):'—'}</strong></span>
-        </span>
-      </div>
-      ${payRows}
-      <div class="pay-cat-footer">
-        <div class="pay-footer-item"><span class="pay-footer-label">Subtotal pagado:</span><span class="pay-footer-val" style="color:var(--success-text)">${catPaid>0?fmtS(catPaid):'—'}</span></div>
-        <div class="pay-footer-item"><span class="pay-footer-label">Diferencia:</span><span class="pay-footer-val ${catDiff.cls}">${catPaid>0?catDiff.txt:'—'}</span></div>
-      </div>
-    </div>`;
+
+    const pendingTxt = catPaid > 0
+      ? fmtS(Math.abs(pending)) + (pending > 0 ? ' por pagar' : ' a favor')
+      : '—';
+    const pendingCls = catPaid > 0 ? (pending > 0 ? 'neg' : 'pos') : '';
+
+    cards += '<div class="pay-cat-card">'
+      + '<div class="pay-cat-head">'
+      + '<span class="pay-cat-name">' + cat.name + '</span>'
+      + '<span class="pay-cat-summary"><span style="color:var(--text-sec)">Presupuesto: <strong>' + fmtS(catBudget) + '</strong></span></span>'
+      + '</div>'
+      + expList
+      + '<div class="pay-row" style="padding:12px 14px;gap:12px;align-items:center;border-top:1px solid var(--border-med)">'
+      + '<span class="pay-name" style="font-weight:500;color:var(--text)">Pago realizado</span>'
+      + '<span class="pay-budgeted" style="color:var(--text-sec);font-size:12px">de ' + fmtS(catBudget) + '</span>'
+      + '<div class="pay-input-wrap">'
+      + '<span style="font-size:12px;color:var(--text-ter)">$</span>'
+      + '<input class="pay-input cat-pay-input" type="number" min="0" placeholder="0"'
+      + ' data-catid="' + cat.id + '" data-budget="' + catBudget + '" data-y="' + y + '" data-m="' + m + '"'
+      + ' value="' + (paid !== null ? paid : '') + '">'
+      + '</div>'
+      + '<span class="pay-diff ' + (paid !== null ? catDiff.cls : 'zero') + '" id="catdiff_' + cat.id + '">'
+      + (paid !== null ? catDiff.txt : '—') + '</span>'
+      + '</div>'
+      + '<div class="pay-cat-footer" data-catfoot="' + cat.id + '">'
+      + '<div class="pay-footer-item"><span class="pay-footer-label">Pagado:</span>'
+      + '<span class="pay-footer-val" style="color:var(--success-text)">' + (catPaid > 0 ? fmtS(catPaid) : '—') + '</span></div>'
+      + '<div class="pay-footer-item"><span class="pay-footer-label">Pendiente:</span>'
+      + '<span class="pay-footer-val ' + pendingCls + '">' + pendingTxt + '</span></div>'
+      + '</div>'
+      + '</div>';
   });
 
-  return `<div class="pay-total-bar">
-    <div class="pay-total-item"><div class="pay-total-label">Presupuesto total</div><div class="pay-total-val">${fmtS(totalBudget)}</div></div>
-    <div class="pay-total-item"><div class="pay-total-label">Total pagado</div><div class="pay-total-val" style="color:var(--success-text)">${totalPaid>0?fmtS(totalPaid):'—'}</div></div>
-    <div class="pay-total-item"><div class="pay-total-label">Por pagar</div><div class="pay-total-val" style="color:var(--warn-text)">${fmtS(Math.max(0,totalBudget-totalPaid))}</div></div>
-    <div class="pay-total-item"><div class="pay-total-label">Diferencia</div><div class="pay-total-val ${totalDiff.cls}">${totalPaid>0?totalDiff.txt:'—'}</div></div>
-  </div>
-  <div class="payments-grid" id="pay-grid">${cards}</div>`;
+  return bar + '<div class="payments-grid" id="pay-grid">' + cards + '</div>';
 }
 
-function renderPaymentsOnly(y, m) {
-  // Re-render just the totals without losing focus
-  const bar = document.querySelector('.pay-total-bar');
-  if (!bar) return;
+
+function wirePayInputs(y, m) {
+  document.querySelectorAll('.cat-pay-input').forEach(function(input) {
+    var catId = input.dataset.catid;
+    var budget = parseFloat(input.dataset.budget);
+    input.addEventListener('input', function() {
+      livePayDiff(this, budget, 'catdiff_' + catId);
+    });
+    input.addEventListener('change', function() {
+      setCatPaid(catId, y, m, this.value);
+      updatePayTotals(y, m);
+    });
+  });
+}
+
+function updatePayTotals(y, m) {
   const totalBudget = monthTotal(y, m);
   const totalPaid = monthPaidTotal(y, m);
   const totalDiff = fmtDiff(totalPaid - totalBudget);
-  bar.querySelectorAll('.pay-total-val')[0].textContent = fmtS(totalBudget);
-  bar.querySelectorAll('.pay-total-val')[1].textContent = totalPaid > 0 ? fmtS(totalPaid) : '—';
-  bar.querySelectorAll('.pay-total-val')[2].textContent = fmtS(Math.max(0, totalBudget - totalPaid));
-  const diffEl = bar.querySelectorAll('.pay-total-val')[3];
-  diffEl.textContent = totalPaid > 0 ? totalDiff.txt : '—';
-  diffEl.className = 'pay-total-val ' + totalDiff.cls;
-  // Update category footers
+  const bar = document.getElementById('pay-total-bar');
+  if (bar) {
+    const vals = bar.querySelectorAll('.pay-total-val');
+    if (vals[1]) { vals[1].textContent = totalPaid > 0 ? fmtS(totalPaid) : '—'; }
+    if (vals[2]) { vals[2].textContent = fmtS(Math.max(0, totalBudget - totalPaid)); }
+    if (vals[3]) { vals[3].textContent = totalPaid > 0 ? totalDiff.txt : '—'; vals[3].className = 'pay-total-val ' + totalDiff.cls; }
+  }
+  // Update each category footer
   S.categories.forEach(cat => {
-    const catPaid = catPaidTotal(cat.id, y, m);
+    const footer = document.querySelector('[data-catfoot="' + cat.id + '"]');
+    if (!footer) return;
     const catBudget = catMonthTotal(cat.id, y, m);
-    const catDiff = fmtDiff(catPaid - catBudget);
-    const card = document.querySelector(`[data-catfoot="${cat.id}"]`);
-    if (card) {
-      card.querySelectorAll('.pay-footer-val')[0].textContent = catPaid > 0 ? fmtS(catPaid) : '—';
-      const de = card.querySelectorAll('.pay-footer-val')[1];
-      de.textContent = catPaid > 0 ? catDiff.txt : '—';
-      de.className = 'pay-footer-val ' + catDiff.cls;
-      const sumEl = card.closest('.pay-cat-card').querySelector('.pay-cat-summary strong:last-child');
+    const catPaid = catPaidTotal(cat.id, y, m);
+    const fvals = footer.querySelectorAll('.pay-footer-val');
+    if (fvals[0]) { fvals[0].textContent = catPaid > 0 ? fmtS(catPaid) : '—'; }
+    if (fvals[1]) {
+      const pending = catBudget - catPaid;
+      fvals[1].textContent = catPaid > 0 ? fmtS(Math.abs(pending)) + (pending > 0 ? ' por pagar' : ' a favor') : '—';
+      fvals[1].className = 'pay-footer-val ' + (catPaid > 0 ? (pending > 0 ? 'neg' : 'pos') : '');
     }
   });
-  // Also update metrics
-  const remaining = totalBudget - totalPaid;
+  // Update top metrics
   const mets = document.querySelectorAll('.metric-value');
   if (mets.length >= 3) {
     mets[1].textContent = fmtS(totalPaid);
-    mets[2].textContent = fmtS(remaining);
-    mets[2].className = 'metric-value ' + (remaining > 0 ? 'warn' : '');
+    const rem = totalBudget - totalPaid;
+    mets[2].textContent = fmtS(rem);
+    mets[2].className = 'metric-value ' + (rem > 0 ? 'warn' : '');
   }
 }
+
 
 function livePayDiff(input, budgeted, diffId) {
   const val = parseFloat(input.value) || 0;
