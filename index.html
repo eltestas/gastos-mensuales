@@ -82,6 +82,9 @@
   tr.cat-row td { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-sec); background: var(--bg-sec); }
   tr.cat-subtotal td { font-weight: 600; font-size: 12px; background: var(--bg-sec); border-top: 1px solid var(--border-med); }
   tr.cat-subtotal td:first-child { padding-left: 24px; font-family: var(--sans); color: var(--text-sec); }
+  tr.carryover-row td { background: var(--warn-bg) !important; }
+  tr.carryover-row td:first-child { padding-left: 24px; color: var(--warn-text); font-style: italic; }
+  td.carryover-amt { font-family: var(--mono); color: var(--warn-text); text-align: right; font-weight: 600; }
   tr.exp-row td:first-child { padding-left: 24px; color: var(--text-sec); }
   tr.exp-row:hover td { background: var(--bg-sec); }
   tr.total-row td { font-weight: 600; background: var(--bg-sec); font-family: var(--mono); border-top: 2px solid var(--border-med); }
@@ -509,6 +512,36 @@ function catPaidTotal(catId, y, m) {
 }
 function monthPaidTotal(y, m) { return S.categories.reduce(function(t, c) { return t + catPaidTotal(c.id, y, m); }, 0); }
 
+function catCarryover(catId, y, m) {
+  // Returns unpaid balance from previous month for this category
+  // (only if previous month had a budget and wasn't fully paid)
+  var prevM = m === 0 ? 11 : m - 1;
+  var prevY = m === 0 ? y - 1 : y;
+  var prevBudget = catMonthTotal(catId, prevY, prevM) + catCarryoverRaw(catId, prevY, prevM);
+  var prevPaid = catPaidTotal(catId, prevY, prevM);
+  var unpaid = prevBudget - prevPaid;
+  return unpaid > 0 ? unpaid : 0;
+}
+
+function catCarryoverRaw(catId, y, m) {
+  // Same as catCarryover but without recursing into itself — returns the carryover
+  // from two months ago into last month (used when computing last month's total budget)
+  var prevM = m === 0 ? 11 : m - 1;
+  var prevY = m === 0 ? y - 1 : y;
+  var prevBudget = catMonthTotal(catId, prevY, prevM);
+  var prevPaid = catPaidTotal(catId, prevY, prevM);
+  var unpaid = prevBudget - prevPaid;
+  return unpaid > 0 ? unpaid : 0;
+}
+
+function catTotalWithCarryover(catId, y, m) {
+  return catMonthTotal(catId, y, m) + catCarryover(catId, y, m);
+}
+
+function monthTotalWithCarryover(y, m) {
+  return S.categories.reduce(function(t, c) { return t + catTotalWithCarryover(c.id, y, m); }, 0);
+}
+
 function loanRemaining(exp) {
   const curDate = new Date(now.getFullYear(), now.getMonth(), 1); let rem = 0;
   for (let i = 0; i < exp.months; i++) { const d = new Date(exp.startYear, exp.startMonth + i, 1); if (d >= curDate) rem += exp.amount; }
@@ -536,7 +569,7 @@ function fmtDiff(diff) {
 function render() {
   const app = document.getElementById('app');
   const ny = now.getFullYear(), nm = now.getMonth();
-  const curTotal = monthTotal(ny, nm);
+  const curTotal = monthTotalWithCarryover(ny, nm);
   const loanRem = totalLoanRemaining();
   const activeCount = S.expenses.filter(e => e.active).length;
   const loanCount = S.expenses.filter(e => !e.permanent && e.active).length;
@@ -671,17 +704,29 @@ function renderMonthTable(y, m) {
         <td style="color:var(--text-sec);font-size:12px;text-align:right">${MES[exp.startMonth]} ${exp.startYear}</td>
       </tr>`;
     });
-    // Subtotal row per category
-    const d = fmtDiff(catDiff);
+    // Carryover from previous month
+    const carryover = catCarryover(cat.id, y, m);
+    if (carryover > 0) {
+      rows += `<tr class="carryover-row exp-row">
+        <td>⚠ Deuda pendiente (${MES[m===0?11:m-1]} ${m===0?y-1:y})<span class="badge loan">arrastre</span></td>
+        <td class="carryover-amt">${fmtS(carryover)}</td>
+        <td style="color:var(--warn-text);font-size:12px">Saldo sin pagar del mes anterior</td>
+        <td></td><td></td>
+      </tr>`;
+    }
+    // Subtotal row per category (include carryover in budget)
+    const catBudgetTotal = catBudget + carryover;
+    const catDiffTotal = catPaid - catBudgetTotal;
+    const d = fmtDiff(catDiffTotal);
     rows += `<tr class="cat-subtotal">
-      <td>Subtotal ${cat.name}</td>
-      <td class="num">${fmtS(catBudget)}</td>
+      <td>Subtotal ${cat.name}${carryover > 0 ? ' <span style="color:var(--warn-text);font-size:10px">(incl. arrastre)</span>' : ''}</td>
+      <td class="num">${fmtS(catBudgetTotal)}</td>
       <td class="num" style="color:var(--success-text)">${catPaid > 0 ? fmtS(catPaid) : '—'}</td>
       <td class="${'diff-'+d.cls}" colspan="2">${catPaid > 0 ? d.txt : '—'}</td>
     </tr>`;
   });
   if (!hasRows) return emptyState('Sin gastos registrados.');
-  const totalBudget = monthTotal(y, m), totalPaid = monthPaidTotal(y, m);
+  const totalBudget = monthTotalWithCarryover(y, m), totalPaid = monthPaidTotal(y, m);
   const td = fmtDiff(totalPaid - totalBudget);
   rows += `<tr class="total-row">
     <td>Total del mes</td>
@@ -703,7 +748,7 @@ function renderMonthTable(y, m) {
 
 function renderPayments(y, m) {
   if (!S.categories.length) return emptyState('Sin categorías. Agrega gastos primero.');
-  const totalBudget = monthTotal(y, m);
+  const totalBudget = monthTotalWithCarryover(y, m);
   const totalPaid = monthPaidTotal(y, m);
   const td = fmtDiff(totalPaid - totalBudget);
 
@@ -741,7 +786,8 @@ function buildPayGrid(y, m) {
     head.className = 'pay-cat-head';
     head.innerHTML = '<span class="pay-cat-name">' + cat.name + '</span>'
       + '<span class="pay-cat-summary">'
-      + '<span style="color:var(--text-sec)">Pres: <strong>' + fmtS(catBudget) + '</strong></span>'
+      + '<span style="color:var(--text-sec)">Pres: <strong>' + fmtS(catBudget) + '</strong>'
+      + (carry > 0 ? ' <span style="color:var(--warn-text);font-size:10px">(+' + fmtS(carry) + ' arrastre)</span>' : '') + '</span>'
       + '<span style="color:var(--success-text)">Pag: <strong>' + (catPaid > 0 ? fmtS(catPaid) : '—') + '</strong></span>'
       + '</span>';
     card.appendChild(head);
