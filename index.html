@@ -690,7 +690,15 @@ function renderMonthTable(y, m) {
       const offBadge = !v ? '<span class="badge off">inactivo</span>' : '';
       const endM = (exp.startMonth + exp.months - 1) % 12;
       const endY = exp.startYear + Math.floor((exp.startMonth + exp.months - 1) / 12);
-      const durText = exp.permanent ? 'Permanente' : `${exp.months}m · fin ${MES[endM]} ${endY}`;
+      // Months remaining from current cell month (y,m) inclusive
+      const cellDate = new Date(y, m, 1);
+      const endDate = new Date(exp.startYear, exp.startMonth + exp.months, 1);
+      let momsLeft = 0;
+      for (let i = 0; i < exp.months; i++) {
+        if (new Date(exp.startYear, exp.startMonth + i, 1) >= cellDate) momsLeft++;
+      }
+      const remText = momsLeft > 0 ? `${momsLeft} mes${momsLeft !== 1 ? 'es' : ''} restante${momsLeft !== 1 ? 's' : ''}` : 'Último mes';
+      const durText = exp.permanent ? 'Permanente' : `${remText} · fin ${MES[endM]} ${endY}`;
       const paidTxt = paid !== null ? '<span style="color:var(--success-text);font-family:var(--mono)">$' + Math.round(paid).toLocaleString('es-MX') + '</span>' : '<span style="color:var(--text-ter)">—</span>';
       rows += `<tr class="exp-row">
         <td>${exp.name}${badge}${offBadge}
