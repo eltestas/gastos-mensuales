@@ -664,6 +664,7 @@ function render() {
   else if (S.modal === 'syncconfig') renderSyncConfigModal();
   else if (S.modal === 'password') renderPasswordModal();
   else if (S.modal === 'pay') renderPayModal();
+  else if (S.modal === 'editpay') renderEditPayModal();
 }
 
 function renderMonthTable(y, m) {
@@ -761,7 +762,7 @@ function renderPayments(y, m) {
     + '<div class="payments-grid" id="pay-grid"></div>';
 
   // Return bar + empty grid; populate grid via DOM after render
-  setTimeout(function() { buildPayGrid(y, m); }, 0);
+  requestAnimationFrame(function() { buildPayGrid(y, m); });
   return bar;
 }
 
@@ -771,8 +772,11 @@ function buildPayGrid(y, m) {
   grid.innerHTML = '';
 
   S.categories.forEach(function(cat) {
-    var catBudget = catMonthTotal(cat.id, y, m);
+    var catBudgetBase = catMonthTotal(cat.id, y, m);
+    var carry = catCarryover(cat.id, y, m);
+    var catBudget = catBudgetBase + carry;
     if (!catBudget) return;
+
     var payments = getCatPayments(cat.id, y, m);
     var catPaid = payments.reduce(function(t, p) { return t + p.amount; }, 0);
     var pending = catBudget - catPaid;
@@ -781,53 +785,65 @@ function buildPayGrid(y, m) {
     var card = document.createElement('div');
     card.className = 'pay-cat-card';
 
-    // Header
+    // ── Header ──
     var head = document.createElement('div');
     head.className = 'pay-cat-head';
+    var carryTag = carry > 0
+      ? ' <span style="color:var(--warn-text);font-size:10px">(+' + fmtS(carry) + ' arrastre)</span>'
+      : '';
     head.innerHTML = '<span class="pay-cat-name">' + cat.name + '</span>'
       + '<span class="pay-cat-summary">'
-      + '<span style="color:var(--text-sec)">Pres: <strong>' + fmtS(catBudget) + '</strong>'
-      + (carry > 0 ? ' <span style="color:var(--warn-text);font-size:10px">(+' + fmtS(carry) + ' arrastre)</span>' : '') + '</span>'
+      + '<span style="color:var(--text-sec)">Pres: <strong>' + fmtS(catBudget) + '</strong>' + carryTag + '</span>'
       + '<span style="color:var(--success-text)">Pag: <strong>' + (catPaid > 0 ? fmtS(catPaid) : '—') + '</strong></span>'
       + '</span>';
     card.appendChild(head);
 
-    // Payment rows
+    // ── Payment rows ──
     if (payments.length === 0) {
       var empty = document.createElement('div');
-      empty.style.cssText = 'padding:8px 14px;font-size:12px;color:var(--text-ter)';
+      empty.style.cssText = 'padding:10px 14px;font-size:12px;color:var(--text-ter)';
       empty.textContent = 'Sin pagos registrados este mes.';
       card.appendChild(empty);
     } else {
       payments.forEach(function(p) {
         var row = document.createElement('div');
         row.className = 'pay-row';
-        row.style.padding = '8px 14px';
+        row.style.cssText = 'padding:9px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)';
 
+        // Note / concept
         var label = document.createElement('span');
-        label.className = 'pay-name';
+        label.style.flex = '1';
+        label.style.fontSize = '13px';
         label.textContent = p.note || 'Pago';
         row.appendChild(label);
 
+        // Date
         if (p.date) {
           var dateEl = document.createElement('span');
-          dateEl.style.cssText = 'font-size:11px;color:var(--text-ter)';
+          dateEl.style.cssText = 'font-size:11px;color:var(--text-ter);white-space:nowrap';
           dateEl.textContent = p.date;
           row.appendChild(dateEl);
         }
 
-        var spacer = document.createElement('span');
-        spacer.style.flex = '1';
-        row.appendChild(spacer);
-
+        // Amount
         var amtEl = document.createElement('span');
-        amtEl.style.cssText = 'font-family:var(--mono);color:var(--success-text);font-weight:500';
+        amtEl.style.cssText = 'font-family:var(--mono);color:var(--success-text);font-weight:600;min-width:80px;text-align:right';
         amtEl.textContent = fmtS(p.amount);
         row.appendChild(amtEl);
 
+        // Edit button
+        var editBtn = document.createElement('button');
+        editBtn.className = 'btn sm icon';
+        editBtn.title = 'Editar';
+        editBtn.innerHTML = '&#9998;';
+        (function(cid, pid, yy, mm) {
+          editBtn.addEventListener('click', function() { openEditPayModal(cid, pid, yy, mm); });
+        })(cat.id, p.id, y, m);
+        row.appendChild(editBtn);
+
+        // Delete button
         var delBtn = document.createElement('button');
         delBtn.className = 'btn sm icon danger';
-        delBtn.style.marginLeft = '8px';
         delBtn.title = 'Eliminar';
         delBtn.innerHTML = '&#10005;';
         (function(cid, pid, yy, mm) {
@@ -842,7 +858,7 @@ function buildPayGrid(y, m) {
       });
     }
 
-    // Footer
+    // ── Footer ──
     var footer = document.createElement('div');
     footer.className = 'pay-cat-footer';
     footer.setAttribute('data-catfoot', cat.id);
@@ -850,7 +866,8 @@ function buildPayGrid(y, m) {
       ? fmtS(Math.abs(pending)) + (pending > 0 ? ' por pagar' : ' a favor')
       : '—';
     var pendingCls = catPaid > 0 ? (pending > 0 ? 'neg' : 'pos') : '';
-    footer.innerHTML = '<div class="pay-footer-item"><span class="pay-footer-label">Pagado:</span>'
+    footer.innerHTML =
+      '<div class="pay-footer-item"><span class="pay-footer-label">Pagado:</span>'
       + '<span class="pay-footer-val" style="color:var(--success-text)">' + (catPaid > 0 ? fmtS(catPaid) : '—') + '</span></div>'
       + '<div class="pay-footer-item"><span class="pay-footer-label">Pendiente:</span>'
       + '<span class="pay-footer-val ' + pendingCls + '">' + pendingTxt + '</span></div>';
@@ -1139,6 +1156,71 @@ function openPayModal(y, m, catId) {
   S.modal_data = { y: y, m: m, catId: catId || (S.categories[0] && S.categories[0].id) || '' };
   document.querySelectorAll('.modal-overlay').forEach(function(el) { el.remove(); });
   renderPayModal();
+}
+
+function openEditPayModal(catId, payId, y, m) {
+  var payments = getCatPayments(catId, y, m);
+  var p = payments.find(function(x) { return x.id === payId; });
+  if (!p) return;
+  S.modal = 'editpay';
+  S.modal_data = { catId: catId, payId: payId, y: y, m: m, amount: p.amount, note: p.note || '', date: p.date || '' };
+  document.querySelectorAll('.modal-overlay').forEach(function(el) { el.remove(); });
+  renderEditPayModal();
+}
+
+function renderEditPayModal() {
+  var d = S.modal_data;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  var modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.maxWidth = '380px';
+
+  // Convert display date dd/mm/yyyy back to yyyy-mm-dd for input
+  var inputDate = '';
+  if (d.date) {
+    var parts = d.date.split('/');
+    if (parts.length === 3) inputDate = parts[2] + '-' + parts[1] + '-' + parts[0];
+  }
+
+  modal.innerHTML = '<h2>Editar pago</h2>'
+    + '<div class="fg"><label>Monto pagado ($)</label><input type="number" id="epm-amount" min="0" value="' + d.amount + '"></div>'
+    + '<div class="fg"><label>Concepto / Nota</label><input type="text" id="epm-note" value="' + (d.note || '') + '" placeholder="Ej. Tarjeta HSBC..."></div>'
+    + '<div class="fg"><label>Fecha</label><input type="date" id="epm-date" value="' + inputDate + '"></div>'
+    + '<div id="epm-msg" style="font-size:12px;min-height:18px;margin-bottom:4px"></div>'
+    + '<div class="modal-foot">'
+    + '<button class="btn danger" id="epm-del-btn">Eliminar pago</button>'
+    + '<button class="btn" onclick="closeModal()">Cancelar</button>'
+    + '<button class="btn primary" id="epm-save-btn">Guardar</button>'
+    + '</div>';
+
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
+  document.body.appendChild(overlay);
+  setTimeout(function() { var inp = document.getElementById('epm-amount'); if(inp){inp.focus();inp.select();} }, 50);
+
+  document.getElementById('epm-save-btn').addEventListener('click', function() {
+    var amount = parseFloat(document.getElementById('epm-amount').value);
+    var note = (document.getElementById('epm-note').value || '').trim();
+    var date = document.getElementById('epm-date').value;
+    var msg = document.getElementById('epm-msg');
+    if (!amount || amount <= 0) { msg.innerHTML = '<span style="color:var(--danger-text)">Ingresa un monto válido.</span>'; return; }
+    var displayDate = date ? (function() { var p = date.split('-'); return p[2] + '/' + p[1] + '/' + p[0]; })() : '';
+    // Update the payment in place
+    var k = payKey(d.y, d.m, d.catId);
+    if (Array.isArray(S.payments[k])) {
+      S.payments[k] = S.payments[k].map(function(p) {
+        return p.id === d.payId ? {id: p.id, amount: amount, note: note, date: displayDate} : p;
+      });
+    }
+    save();
+    closeModal();
+  });
+
+  document.getElementById('epm-del-btn').addEventListener('click', function() {
+    if (!confirm('¿Eliminar este pago?')) return;
+    deletePayment(d.catId, d.payId, d.y, d.m);
+  });
 }
 
 function renderPayModal() {
