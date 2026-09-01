@@ -148,6 +148,38 @@
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border-med); border-radius: 3px; }
+  /* PDF print styles */
+  @media print {
+    body { background: #fff !important; padding: 0 !important; font-size: 12px; }
+    .container { max-width: 100% !important; gap: 8px !important; }
+    #app > *:not(#pdf-content) { display: none !important; }
+    #pdf-content { display: block !important; }
+    .pdf-header { margin-bottom: 12px; }
+    .pdf-title { font-size: 18px; font-weight: 700; color: #1a1a1a; }
+    .pdf-subtitle { font-size: 12px; color: #6b6b6b; margin-top: 2px; }
+    .pdf-cat { margin-bottom: 14px; break-inside: avoid; }
+    .pdf-cat-name { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #6b6b6b; padding: 5px 0; border-bottom: 2px solid #1a1a1a; margin-bottom: 6px; }
+    .pdf-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .pdf-table th { background: #f5f5f4; font-size: 10px; font-weight: 600; text-align: left; padding: 5px 8px; border-bottom: 1px solid #ccc; color: #6b6b6b; text-transform: uppercase; letter-spacing: 0.04em; }
+    .pdf-table th.r { text-align: right; }
+    .pdf-table td { padding: 5px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    .pdf-table td.r { text-align: right; font-family: monospace; }
+    .pdf-table td.warn { color: #a06010; font-family: monospace; text-align: right; }
+    .pdf-table tr.subtotal td { font-weight: 700; background: #f5f5f4; border-top: 1px solid #ccc; font-family: monospace; }
+    .pdf-table tr.subtotal td:first-child { font-family: sans-serif; }
+    .pdf-table tr.grand-total td { font-weight: 700; font-size: 12px; background: #1a1a1a; color: #fff; font-family: monospace; }
+    .pdf-table tr.grand-total td:first-child { font-family: sans-serif; }
+    .pdf-table tr.carryover td { color: #a06010; font-style: italic; background: #fef3e2; }
+    .pdf-payments { margin-top: 14px; break-inside: avoid; }
+    .pdf-payments-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #6b6b6b; padding: 5px 0; border-bottom: 2px solid #1a1a1a; margin-bottom: 6px; }
+    .pdf-pay-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #eee; font-size: 11px; }
+    .pdf-pay-row.cat-head { font-weight: 600; color: #6b6b6b; font-size: 10px; text-transform: uppercase; background: #f5f5f4; padding: 3px 6px; margin-top: 6px; }
+    .pdf-summary { display: flex; gap: 20px; margin-top: 14px; padding-top: 10px; border-top: 2px solid #1a1a1a; break-inside: avoid; }
+    .pdf-summary-item { flex: 1; }
+    .pdf-summary-label { font-size: 10px; color: #6b6b6b; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+    .pdf-summary-val { font-size: 16px; font-weight: 700; font-family: monospace; }
+    .pdf-footer { margin-top: 14px; font-size: 10px; color: #aaa; text-align: right; }
+  }
   .sync-bar { display:flex; align-items:center; gap:10px; padding:8px 14px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-lg); font-size:12px; flex-wrap:wrap; }
   .sync-dot { width:8px; height:8px; border-radius:50%; background:var(--text-ter); flex-shrink:0; }
   .sync-dot.ok { background:var(--success-text); }
@@ -580,6 +612,7 @@ function render() {
       <button class="btn" onclick="openCats()">&#128193; Categorías</button>
       <button class="btn" onclick="openImportExport()">&#8645; Exportar / Importar</button>
       <button class="btn" onclick="openPasswordModal()" title="${isPasswordSet() ? 'Contraseña configurada' : 'Sin contraseña'}">${isPasswordSet() ? '🔒' : '🔓'}</button>
+      <button class="btn" onclick="openPdfModal()">&#128196; Exportar PDF</button>
       <button class="btn success" onclick="openPayModal(${S.year},${S.month})">+ Nuevo pago</button>
       <button class="btn primary" onclick="openAdd()">+ Nuevo gasto</button>
     </div>
@@ -662,6 +695,7 @@ function render() {
   else if (S.modal === 'password') renderPasswordModal();
   else if (S.modal === 'pay') renderPayModal();
   else if (S.modal === 'editpay') renderEditPayModal();
+  else if (S.modal === 'pdf') renderPdfModal();
 }
 
 function renderMonthTable(y, m) {
@@ -1360,6 +1394,194 @@ function renderPayModal() {
     addCatPayment(catId, y, m, amount, note, displayDate);
     closeModal();
   });
+}
+
+/* ── PDF EXPORT ── */
+function openPdfModal() {
+  S.modal = 'pdf';
+  document.querySelectorAll('.modal-overlay').forEach(function(el) { el.remove(); });
+  renderPdfModal();
+}
+
+function renderPdfModal() {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  var modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.maxWidth = '400px';
+
+  var catOptions = '<option value="__all__">Todas las categorías</option>';
+  S.categories.forEach(function(cat) {
+    catOptions += '<option value="' + cat.id + '">' + cat.name + '</option>';
+  });
+
+  var y = S.year, m = S.month;
+
+  var monthOptions = '';
+  MES_F.forEach(function(name, i) {
+    monthOptions += '<option value="' + i + '"' + (i === m ? ' selected' : '') + '>' + name + '</option>';
+  });
+  // Year options: 3 years back to 2 ahead
+  var yearOptions = '';
+  for (var yi = y - 3; yi <= y + 2; yi++) {
+    yearOptions += '<option value="' + yi + '"' + (yi === y ? ' selected' : '') + '>' + yi + '</option>';
+  }
+
+  modal.innerHTML = '<h2>&#128196; Exportar PDF</h2>'
+    + '<div class="fg-row">'
+    + '<div class="fg"><label>Mes</label><select id="pdf-month">' + monthOptions + '</select></div>'
+    + '<div class="fg"><label>Año</label><select id="pdf-year">' + yearOptions + '</select></div>'
+    + '</div>'
+    + '<div class="fg"><label>Categoría</label><select id="pdf-cat">' + catOptions + '</select></div>'
+    + '<div class="fg"><label class="toggle-row"><input type="checkbox" id="pdf-include-payments" checked> Incluir pagos realizados</label></div>'
+    + '<div class="fg"><label class="toggle-row"><input type="checkbox" id="pdf-include-summary" checked> Incluir resumen de totales</label></div>'
+    + '<div class="modal-foot">'
+    + '<button class="btn" onclick="closeModal()">Cancelar</button>'
+    + '<button class="btn primary" id="pdf-gen-btn">Generar PDF</button>'
+    + '</div>';
+
+  overlay.appendChild(modal);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
+  document.body.appendChild(overlay);
+
+  document.getElementById('pdf-gen-btn').addEventListener('click', function() {
+    var selY = parseInt(document.getElementById('pdf-year').value);
+    var selM = parseInt(document.getElementById('pdf-month').value);
+    var catId = document.getElementById('pdf-cat').value;
+    var includePayments = document.getElementById('pdf-include-payments').checked;
+    var includeSummary = document.getElementById('pdf-include-summary').checked;
+    closeModal();
+    setTimeout(function() { generatePdf(selY, selM, catId, includePayments, includeSummary); }, 100);
+  });
+}
+
+function fmtPdf(n) {
+  if (n === 0) return '—';
+  return '$' + Math.round(n).toLocaleString('es-MX');
+}
+
+function generatePdf(y, m, filterCatId, includePayments, includeSummary) {
+  var cats = filterCatId === '__all__'
+    ? S.categories
+    : S.categories.filter(function(c) { return c.id === filterCatId; });
+
+  var totalBudget = 0, totalPaid = 0;
+
+  // Build expenses section
+  var expHtml = '';
+  cats.forEach(function(cat) {
+    var exps = S.expenses.filter(function(e) {
+      if (e.categoryId !== cat.id) return false;
+      if (e.permanent) return true;
+      return new Date(y, m, 1) < new Date(e.startYear, e.startMonth + e.months, 1);
+    });
+    var carry = catCarryover(cat.id, y, m);
+    var catBudget = catMonthTotal(cat.id, y, m) + carry;
+    var catPaid = catPaidTotal(cat.id, y, m);
+    totalBudget += catBudget;
+    totalPaid += catPaid;
+
+    if (!exps.length && carry === 0) return;
+
+    expHtml += '<div class="pdf-cat">';
+    expHtml += '<div class="pdf-cat-name">' + cat.name + '</div>';
+    expHtml += '<table class="pdf-table"><thead><tr>'
+      + '<th>Gasto</th><th class="r">Monto</th><th>Tipo</th><th>Duración</th>'
+      + '</tr></thead><tbody>';
+
+    exps.forEach(function(exp) {
+      var v = amt(exp, y, m);
+      var endM = (exp.startMonth + exp.months - 1) % 12;
+      var endY = exp.startYear + Math.floor((exp.startMonth + exp.months - 1) / 12);
+      // Months remaining
+      var momsLeft = 0;
+      for (var i = 0; i < exp.months; i++) {
+        if (new Date(exp.startYear, exp.startMonth + i, 1) >= new Date(y, m, 1)) momsLeft++;
+      }
+      var durText = exp.permanent ? 'Permanente'
+        : (momsLeft > 0 ? momsLeft + ' mes' + (momsLeft !== 1 ? 'es' : '') + ' restante' + (momsLeft !== 1 ? 's' : '') : 'Último mes')
+          + ' · fin ' + MES[endM] + ' ' + endY;
+      expHtml += '<tr>'
+        + '<td>' + exp.name + '</td>'
+        + '<td class="' + (v > 0 ? (exp.permanent ? 'r' : 'warn') : 'r') + '">' + (v > 0 ? fmtPdf(v) : '—') + '</td>'
+        + '<td>' + (exp.permanent ? 'Fijo' : 'Préstamo') + '</td>'
+        + '<td style="font-size:10px;color:#6b6b6b">' + durText + '</td>'
+        + '</tr>';
+    });
+
+    if (carry > 0) {
+      expHtml += '<tr class="carryover"><td>⚠ Deuda pendiente (' + MES[m === 0 ? 11 : m - 1] + ' ' + (m === 0 ? y - 1 : y) + ')</td>'
+        + '<td class="warn">' + fmtPdf(carry) + '</td><td>Arrastre</td><td></td></tr>';
+    }
+
+    var diff = catPaid - catBudget;
+    expHtml += '<tr class="subtotal"><td>Subtotal ' + cat.name + '</td>'
+      + '<td>' + fmtPdf(catBudget) + '</td>'
+      + '<td>' + (catPaid > 0 ? fmtPdf(catPaid) + ' pagado' : '—') + '</td>'
+      + '<td>' + (catPaid > 0 ? (diff >= 0 ? '+' : '') + fmtPdf(diff) : '—') + '</td>'
+      + '</tr>';
+    expHtml += '</tbody></table></div>';
+  });
+
+  // Payments section
+  var payHtml = '';
+  if (includePayments) {
+    var hasAnyPay = false;
+    var payInner = '';
+    cats.forEach(function(cat) {
+      var payments = getCatPayments(cat.id, y, m);
+      if (!payments.length) return;
+      hasAnyPay = true;
+      payInner += '<div class="pdf-pay-row cat-head">' + cat.name + '</div>';
+      payments.forEach(function(p) {
+        payInner += '<div class="pdf-pay-row">'
+          + '<span>' + (p.note || 'Pago') + '</span>'
+          + '<span style="display:flex;gap:20px">'
+          + '<span style="color:#aaa">' + (p.date || '') + '</span>'
+          + '<span style="font-family:monospace;color:#1a7a3a;font-weight:600">' + fmtPdf(p.amount) + '</span>'
+          + '</span></div>';
+      });
+    });
+    if (hasAnyPay) {
+      payHtml = '<div class="pdf-payments"><div class="pdf-payments-title">Pagos realizados</div>' + payInner + '</div>';
+    }
+  }
+
+  // Summary section
+  var summaryHtml = '';
+  if (includeSummary) {
+    var pending = totalBudget - totalPaid;
+    summaryHtml = '<div class="pdf-summary">'
+      + '<div class="pdf-summary-item"><div class="pdf-summary-label">Presupuesto</div><div class="pdf-summary-val">' + fmtPdf(totalBudget) + '</div></div>'
+      + '<div class="pdf-summary-item"><div class="pdf-summary-label">Total pagado</div><div class="pdf-summary-val" style="color:#1a7a3a">' + (totalPaid > 0 ? fmtPdf(totalPaid) : '—') + '</div></div>'
+      + '<div class="pdf-summary-item"><div class="pdf-summary-label">Por pagar</div><div class="pdf-summary-val" style="color:' + (pending > 0 ? '#a06010' : '#1a7a3a') + '">' + fmtPdf(Math.abs(pending)) + '</div></div>'
+      + '</div>';
+  }
+
+  // Inject print content into app
+  var existing = document.getElementById('pdf-content');
+  if (existing) existing.remove();
+
+  var catLabel = filterCatId === '__all__' ? 'Todas las categorías'
+    : (S.categories.find(function(c) { return c.id === filterCatId; }) || {}).name || '';
+
+  var content = document.createElement('div');
+  content.id = 'pdf-content';
+  content.style.display = 'none';
+  content.innerHTML =
+    '<div class="pdf-header">'
+    + '<div class="pdf-title">Gastos Mensuales — ' + MES_F[m] + ' ' + y + '</div>'
+    + '<div class="pdf-subtitle">' + (filterCatId !== '__all__' ? 'Categoría: ' + catLabel + ' · ' : '') + 'Generado el ' + new Date().toLocaleDateString('es-MX', {day:'2-digit',month:'long',year:'numeric'}) + '</div>'
+    + '</div>'
+    + expHtml
+    + payHtml
+    + summaryHtml
+    + '<div class="pdf-footer">labiblioteca.com.mx · Gastos Mensuales</div>';
+
+  document.getElementById('app').appendChild(content);
+  window.print();
+  // Clean up after print
+  setTimeout(function() { var el = document.getElementById('pdf-content'); if (el) el.remove(); }, 1000);
 }
 
 /* ── SYNC CONFIG MODAL ── */
