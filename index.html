@@ -744,14 +744,12 @@ function renderMonthTable(y, m) {
         <td style="color:var(--text-sec);font-size:12px;text-align:right">${MES[exp.startMonth]} ${exp.startYear}</td>
       </tr>`;
     });
-    // Subtotal row per category (carryover shown separately below table)
+    // Subtotal row per category — only current month budget, no carryover
     const carryover = catCarryover(cat.id, y, m);
-    const catBudgetTotal = catBudget + carryover;
-    const catDiffTotal = catPaid - catBudgetTotal;
-    const d = fmtDiff(catDiffTotal);
+    const d = fmtDiff(catPaid - catBudget);
     rows += `<tr class="cat-subtotal">
-      <td>Subtotal ${cat.name}${carryover > 0 ? ' <span style="color:var(--warn-text);font-size:10px">(incl. arrastre)</span>' : ''}</td>
-      <td class="num">${fmtS(catBudgetTotal)}</td>
+      <td>Subtotal ${cat.name}</td>
+      <td class="num">${fmtS(catBudget)}</td>
       <td class="num" style="color:var(--success-text)">${catPaid > 0 ? fmtS(catPaid) : '—'}</td>
       <td class="${'diff-'+d.cls}" colspan="2">${catPaid > 0 ? d.txt : '—'}</td>
     </tr>`;
@@ -1379,6 +1377,50 @@ function renderEditPayModal() {
   });
 }
 
+function buildApplicaOptions(catId, y, m) {
+  // Returns array of {label, y, m} for current month + any pending months
+  var options = [{ label: MES_F[m] + ' ' + y + ' (mes actual)', y: y, m: m, current: true }];
+  // Walk back up to 24 months looking for carryover origins
+  var cy = y, cm = m;
+  for (var i = 0; i < 24; i++) {
+    var pm = cm === 0 ? 11 : cm - 1;
+    var py = cm === 0 ? cy - 1 : cy;
+    var prevBase = catMonthTotal(catId, py, pm);
+    var prevPaid = catPaidTotal(catId, py, pm);
+    // Check if this month had budget and unpaid balance
+    if (prevBase > 0) {
+      var prevCarry = catCarryover(catId, py, pm);
+      var prevBudget = prevBase + prevCarry;
+      var unpaid = prevBudget - prevPaid;
+      if (unpaid > 0) {
+        options.push({ label: MES_F[pm] + ' ' + py + ' — pendiente ' + fmtS(unpaid), y: py, m: pm, current: false });
+      } else {
+        break; // fully paid, no need to go further back
+      }
+    } else {
+      break;
+    }
+    cy = py; cm = pm;
+  }
+  return options;
+}
+
+function renderApplicaSection(catId, y, m) {
+  var opts = buildApplicaOptions(catId, y, m);
+  if (opts.length === 1) return ''; // only current month, no need to show
+  var radios = '';
+  opts.forEach(function(opt, i) {
+    var val = opt.y + '-' + opt.m;
+    radios += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:var(--radius);cursor:pointer;font-size:13px;'
+      + (opt.current ? '' : 'color:var(--warn-text)') + '">'
+      + '<input type="radio" name="pm-aplica" value="' + val + '"' + (i === 0 ? ' checked' : '') + '>'
+      + opt.label + '</label>';
+  });
+  return '<div class="fg"><label>¿A qué mes aplica?</label>'
+    + '<div style="border:1px solid var(--border-med);border-radius:var(--radius);overflow:hidden;margin-top:4px">'
+    + radios + '</div></div>';
+}
+
 function renderPayModal() {
   var d = S.modal_data;
   var y = d.y, m = d.m;
@@ -1391,21 +1433,24 @@ function renderPayModal() {
     catOptions += '<option value="' + cat.id + '"' + (cat.id === d.catId ? ' selected' : '') + '>'
       + cat.name + (budget > 0 ? ' (pres: ' + fmtS(budget) + ')' : '') + '</option>';
   });
-
   if (!catOptions) {
     S.categories.forEach(function(cat) {
       catOptions += '<option value="' + cat.id + '"' + (cat.id === d.catId ? ' selected' : '') + '>' + cat.name + '</option>';
     });
   }
   if (!catOptions) catOptions = '<option value="">Sin categorías</option>';
+
   var today = new Date().toISOString().slice(0, 10);
+  var initCatId = d.catId || (S.categories[0] && S.categories[0].id) || '';
+  var applicaHtml = renderApplicaSection(initCatId, y, m);
 
   var modal = document.createElement('div');
   modal.className = 'modal';
-  modal.style.maxWidth = '380px';
+  modal.style.maxWidth = '400px';
   modal.innerHTML = '<h2>Registrar pago</h2>'
     + '<div class="fg"><label>Categoría</label><select id="pm-cat">' + catOptions + '</select></div>'
-    + '<div class="fg"><label>Monto pagado ($)</label><input type="number" id="pm-amount" min="0" placeholder="0" autofocus></div>'
+    + '<div id="pm-aplica-wrap">' + applicaHtml + '</div>'
+    + '<div class="fg"><label>Monto pagado ($)</label><input type="number" id="pm-amount" min="0" placeholder="0"></div>'
     + '<div class="fg"><label>Concepto / Nota (opcional)</label><input type="text" id="pm-note" placeholder="Ej. Tarjeta HSBC, efectivo..."></div>'
     + '<div class="fg"><label>Fecha</label><input type="date" id="pm-date" value="' + today + '"></div>'
     + '<div id="pm-msg" style="font-size:12px;min-height:18px;margin-bottom:4px"></div>'
@@ -1419,6 +1464,12 @@ function renderPayModal() {
   document.body.appendChild(overlay);
   setTimeout(function() { var inp = document.getElementById('pm-amount'); if (inp) inp.focus(); }, 50);
 
+  // When category changes, rebuild the aplica section
+  modal.querySelector('#pm-cat').addEventListener('change', function() {
+    var wrap = document.getElementById('pm-aplica-wrap');
+    if (wrap) wrap.innerHTML = renderApplicaSection(this.value, y, m);
+  });
+
   document.getElementById('pm-save-btn').addEventListener('click', function() {
     var catId = document.getElementById('pm-cat').value;
     var amount = parseFloat(document.getElementById('pm-amount').value);
@@ -1427,9 +1478,15 @@ function renderPayModal() {
     var msg = document.getElementById('pm-msg');
     if (!catId) { msg.innerHTML = '<span style="color:var(--danger-text)">Selecciona una categoría.</span>'; return; }
     if (!amount || amount <= 0) { msg.innerHTML = '<span style="color:var(--danger-text)">Ingresa un monto válido.</span>'; return; }
-    // Format date for display
     var displayDate = date ? (function() { var p = date.split('-'); return p[2] + '/' + p[1] + '/' + p[0]; })() : '';
-    addCatPayment(catId, y, m, amount, note, displayDate);
+    // Determine target month from aplica radio
+    var aplicaRadio = modal.querySelector('input[name="pm-aplica"]:checked');
+    var targetY = y, targetM = m;
+    if (aplicaRadio) {
+      var parts = aplicaRadio.value.split('-');
+      targetY = parseInt(parts[0]); targetM = parseInt(parts[1]);
+    }
+    addCatPayment(catId, targetY, targetM, amount, note, displayDate);
     closeModal();
   });
 }
