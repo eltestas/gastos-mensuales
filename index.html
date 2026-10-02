@@ -744,17 +744,8 @@ function renderMonthTable(y, m) {
         <td style="color:var(--text-sec);font-size:12px;text-align:right">${MES[exp.startMonth]} ${exp.startYear}</td>
       </tr>`;
     });
-    // Carryover from previous month
+    // Subtotal row per category (carryover shown separately below table)
     const carryover = catCarryover(cat.id, y, m);
-    if (carryover > 0) {
-      rows += `<tr class="carryover-row exp-row">
-        <td>⚠ Deuda pendiente (${MES[m===0?11:m-1]} ${m===0?y-1:y})<span class="badge loan">arrastre</span></td>
-        <td class="carryover-amt">${fmtS(carryover)}</td>
-        <td style="color:var(--warn-text);font-size:12px">Saldo sin pagar del mes anterior</td>
-        <td></td><td></td>
-      </tr>`;
-    }
-    // Subtotal row per category (include carryover in budget)
     const catBudgetTotal = catBudget + carryover;
     const catDiffTotal = catPaid - catBudgetTotal;
     const d = fmtDiff(catDiffTotal);
@@ -766,6 +757,18 @@ function renderMonthTable(y, m) {
     </tr>`;
   });
   if (!hasRows) return emptyState('Sin gastos registrados.');
+  // Collect all carryovers for the pendientes section
+  const pendienteRows = [];
+  S.categories.forEach(function(cat) {
+    const carry = catCarryover(cat.id, y, m);
+    if (carry > 0) {
+      const prevM = m === 0 ? 11 : m - 1;
+      const prevY = m === 0 ? y - 1 : y;
+      pendienteRows.push({ cat, carry, prevM, prevY });
+    }
+  });
+  const totalCarryover = pendienteRows.reduce((t, r) => t + r.carry, 0);
+
   const totalBudget = monthTotalWithCarryover(y, m), totalPaid = monthPaidTotal(y, m);
   const td = fmtDiff(totalPaid - totalBudget);
   rows += `<tr class="total-row">
@@ -774,6 +777,41 @@ function renderMonthTable(y, m) {
     <td class="num" style="color:var(--success-text)">${totalPaid > 0 ? fmtS(totalPaid) : '—'}</td>
     <td class="${'diff-'+td.cls}" colspan="2">${totalPaid > 0 ? td.txt : '—'}</td>
   </tr>`;
+
+  // Build pendientes section
+  let pendientesHtml = '';
+  if (pendienteRows.length > 0) {
+    const prevMonthLabel = MES_F[pendienteRows[0].prevM] + ' ' + pendienteRows[0].prevY;
+    let pRows = '';
+    pendienteRows.forEach(r => {
+      pRows += `<tr class="exp-row">
+        <td style="padding-left:14px">${r.cat.name} — Pendiente</td>
+        <td class="carryover-amt">${fmtS(r.carry)}</td>
+        <td style="color:var(--warn-text);font-size:12px">Saldo sin pagar de ${MES_F[r.prevM]} ${r.prevY}</td>
+        <td colspan="2"></td>
+      </tr>`;
+    });
+    pendientesHtml = `
+    <div class="table-wrap" style="margin-top:10px;border-color:var(--warn-text)">
+      <table>
+        <thead><tr style="background:var(--warn-bg)">
+          <th style="color:var(--warn-text)">⚠ Pendientes de ${prevMonthLabel}</th>
+          <th class="num" style="color:var(--warn-text)">Monto</th>
+          <th style="color:var(--warn-text)">Origen</th>
+          <th colspan="2"></th>
+        </tr></thead>
+        <tbody>
+          ${pRows}
+          <tr class="total-row" style="background:var(--warn-bg)">
+            <td style="color:var(--warn-text)">Total pendientes</td>
+            <td class="num" style="color:var(--warn-text)">${fmtS(totalCarryover)}</td>
+            <td colspan="3"></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+  }
+
   return `<div class="table-wrap"><table>
     <thead><tr>
       <th>Gasto</th>
@@ -783,7 +821,7 @@ function renderMonthTable(y, m) {
       <th class="num">Inicio</th>
     </tr></thead>
     <tbody>${rows}</tbody>
-  </table></div>`;
+  </table></div>` + pendientesHtml;
 }
 
 function renderPayments(y, m) {
