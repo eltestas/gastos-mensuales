@@ -934,7 +934,7 @@ function renderMonthTable(y, m) {
   });
   const totalCarryover = pendienteRows.reduce((t, r) => t + r.carry, 0);
 
-  const totalBudget = monthTotalWithCarryover(y, m), totalPaid = monthPaidTotal(y, m);
+  const totalBudget = monthTotal(y, m), totalPaid = monthPaidTotal(y, m);
   const td = fmtDiff(totalPaid - totalBudget);
   rows += `<tr class="total-row">
     <td>Total del mes</td>
@@ -1160,7 +1160,6 @@ function renderYearTable() {
     rows += `<tr class="cat-row"><td colspan="14">${cat.name}</td></tr>`;
     exps.forEach(exp => {
       const badge = exp.permanent ? '<span class="badge perm">fijo</span>' : '<span class="badge loan">préstamo</span>';
-      const annual = Array.from({length:12},(_,i)=>amt(exp,y,i)).reduce((a,b)=>a+b,0);
       rows += `<tr class="exp-row">
         <td style="min-width:140px">${exp.name}${badge}
           <span class="row-actions">
@@ -1172,44 +1171,29 @@ function renderYearTable() {
           const v=amt(exp,y,i), isN=y===ny&&i===nm;
           return `<td class="${isN?'month-now':(v>0?(exp.permanent?'fixed-amt':'loan-amt'):'muted')}" style="font-size:12px;text-align:right">${v>0?'$'+Math.round(v).toLocaleString('es-MX'):'—'}</td>`;
         }).join('')}
-        <td class="num" style="font-weight:600">${fmt(annual)}</td>
       </tr>`;
     });
-    // Category subtotal row for year view — shows budget + paid + diff per month
-    const catAnnual = Array.from({length:12},(_,i)=>catMonthTotal(cat.id,y,i)).reduce((a,b)=>a+b,0);
-    const catAnnualPaid = Array.from({length:12},(_,i)=>catPaidTotal(cat.id,y,i)).reduce((a,b)=>a+b,0);
+    // Category subtotal row for year view — shows budget only per month
     rows += `<tr class="cat-subtotal">
       <td>Subtotal ${cat.name}</td>
       ${Array.from({length:12},(_,i)=>{
-        const v=catMonthTotal(cat.id,y,i), p=catPaidTotal(cat.id,y,i), isN=y===ny&&i===nm;
-        const diff = p > 0 ? fmtDiff(p-v) : null;
+        const v=catMonthTotal(cat.id,y,i), isN=y===ny&&i===nm;
         return `<td class="${isN?'month-now':'num'}" style="font-size:11px;padding:5px 8px">`
           + (v>0?'$'+Math.round(v).toLocaleString('es-MX'):'—')
-          + (p>0?'<br><span style="color:var(--success-text)">$'+Math.round(p).toLocaleString('es-MX')+'</span>':'')
           + '</td>';
       }).join('')}
-      <td class="num" style="font-size:11px">${fmtS(catAnnual)}<br><span style="color:var(--success-text)">${catAnnualPaid>0?fmtS(catAnnualPaid):'—'}</span></td>
     </tr>`;
   });
   if (!hasRows) return emptyState('Sin gastos registrados.');
   const totals = Array.from({length:12},(_,i)=>monthTotal(y,i));
-  const paidTotals = Array.from({length:12},(_,i)=>monthPaidTotal(y,i));
   rows += `<tr class="total-row">
     <td>Total presupuesto</td>
     ${totals.map((t,i)=>`<td class="${y===ny&&i===nm?'month-now':'num'}">${fmtS(t)}</td>`).join('')}
-    <td class="num">${fmtS(totals.reduce((a,b)=>a+b,0))}</td>
-  </tr>`;
-  rows += `<tr class="total-row" style="background:var(--success-bg)">
-    <td style="color:var(--success-text)">Total pagado</td>
-    ${paidTotals.map((t,i)=>`<td class="num" style="color:var(--success-text);${y===ny&&i===nm?'background:var(--info-bg)':''}">
-      ${t > 0 ? fmtS(t) : '—'}</td>`).join('')}
-    <td class="num" style="color:var(--success-text)">${fmtS(paidTotals.reduce((a,b)=>a+b,0))}</td>
   </tr>`;
   return `<div class="table-wrap"><table style="table-layout:fixed;min-width:850px">
     <thead><tr>
       <th style="min-width:150px">Gasto</th>
       ${MES.map((me,i)=>`<th class="${now.getFullYear()===y&&i===nm?'month-now num':'num'}" style="width:56px">${me}</th>`).join('')}
-      <th class="num" style="width:74px">Año</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
