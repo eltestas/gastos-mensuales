@@ -232,6 +232,7 @@ const now = new Date();
 let S = {
   categories: [], expenses: [],
   payments: {},   // key: "YYYY-MM-catId" => { expId: amount }
+  pendienteOverrides: {}, // key: "YYYY-M-catId" => number (override amount), null means deleted
   year: now.getFullYear(), month: now.getMonth(),
   tab: 'month', modal: null, editId: null, editCatId: null, modal_data: {}
 };
@@ -442,6 +443,7 @@ function dataToSync() {
     categories: S.categories,
     expenses: S.expenses,
     payments: S.payments,
+    pendienteOverrides: S.pendienteOverrides,
     pwHash: getPasswordHash() || undefined  // include password hash in Gist
   };
 }
@@ -450,6 +452,7 @@ function applySync(remote) {
   if (remote.categories) S.categories = remote.categories;
   if (remote.expenses) S.expenses = remote.expenses;
   if (remote.payments) S.payments = remote.payments;
+  if (remote.pendienteOverrides) S.pendienteOverrides = remote.pendienteOverrides;
   if (remote.pwHash) {
     REMOTE_PW_HASH = remote.pwHash;
     localStorage.setItem('gastos_pw_hash', remote.pwHash); // cache locally too
@@ -470,6 +473,7 @@ function load() {
     if (d) {
       S = {...S, ...JSON.parse(d)};
       if (!S.payments) S.payments = {};
+      if (!S.pendienteOverrides) S.pendienteOverrides = {};
       localStorage.setItem('gastos_html_v2', JSON.stringify(S));
     }
   } catch(e) {}
@@ -539,6 +543,162 @@ function handleDeletePayment(btn) {
   if (!confirm('¿Eliminar este pago?')) return;
   deletePayment(catId, payId, y, m);
 }
+
+// ── PENDIENTE OVERRIDES ──
+function pendienteKey(catId, y, m) { return y + '-' + m + '-' + catId; }
+
+function deletePendiente(catId, y, m) {
+  if (!confirm('¿Eliminar este pendiente? El arrastre quedará en cero para este mes.')) return;
+  if (!S.pendienteOverrides) S.pendienteOverrides = {};
+  S.pendienteOverrides[pendienteKey(catId, y, m)] = null;
+  save(); render();
+}
+
+function savePendienteEdit(catId, y, m) {
+  var inp = document.getElementById('pend-edit-amount');
+  if (!inp) return;
+  var val = parseFloat(inp.value);
+  if (isNaN(val) || val < 0) { alert('Ingresa un monto válido (mayor o igual a 0).'); return; }
+  if (!S.pendienteOverrides) S.pendienteOverrides = {};
+  S.pendienteOverrides[pendienteKey(catId, y, m)] = val;
+  save();
+  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+  render();
+}
+
+function openEditPendiente(catId, y, m, currentAmount) {
+  document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+  var cat = S.categories.find(function(c) { return c.id === catId; });
+  var catName = cat ? cat.name : catId;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = '<div class="modal" style="max-width:380px">'
+    + '<div class="modal-header"><span class="modal-title">Editar pendiente — ' + catName + '</span>'
+    + '<button class="btn sm icon" id="pend-edit-close">✕</button></div>'
+    + '<div class="modal-body">'
+    + '<p style="margin-bottom:12px;font-size:13px;color:var(--text-sec)">Ajusta el monto pendiente arrastrado de '
+    + MES_F[m] + ' ' + y + '.</p>'
+    + '<label class="form-label">Nuevo monto pendiente</label>'
+    + '<input id="pend-edit-amount" type="number" min="0" step="1" class="form-input" value="' + Math.round(currentAmount) + '" style="margin-bottom:16px">'
+    + '</div>'
+    + '<div class="modal-footer">'
+    + '<button class="btn" id="pend-edit-cancel">Cancelar</button>'
+    + '<button class="btn primary" id="pend-edit-save">Guardar</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  document.getElementById('pend-edit-close').addEventListener('click', function() { overlay.remove(); });
+  document.getElementById('pend-edit-cancel').addEventListener('click', function() { overlay.remove(); });
+  document.getElementById('pend-edit-save').addEventListener('click', function() {
+    savePendienteEdit(catId, y, m);
+  });
+  document.getElementById('pend-edit-amount').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') savePendienteEdit(catId, y, m);
+  });
+  setTimeout(function() {
+    var f = document.getElementById('pend-edit-amount');
+    if (f) { f.focus(); f.select(); }
+  }, 50);
+}
+
+function buildPendientesSection(y, m) {
+  var placeholder = document.getElementById('pendientes-section');
+  if (!placeholder) return; // not on month tab or no pendientes
+  var pendienteRows = [];
+  S.categories.forEach(function(cat) {
+    var carry = catCarryover(cat.id, y, m);
+    if (carry > 0) {
+      var prevM = m === 0 ? 11 : m - 1;
+      var prevY = m === 0 ? y - 1 : y;
+      pendienteRows.push({ cat: cat, carry: carry, prevM: prevM, prevY: prevY });
+    }
+  });
+  if (!pendienteRows.length) { placeholder.remove(); return; }
+  var totalCarryover = pendienteRows.reduce(function(t, r) { return t + r.carry; }, 0);
+  var prevMonthLabel = MES_F[pendienteRows[0].prevM] + ' ' + pendienteRows[0].prevY;
+
+  var wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  wrap.style.cssText = 'margin-top:10px;border-color:var(--warn-text)';
+
+  var table = document.createElement('table');
+
+  // Header
+  var thead = document.createElement('thead');
+  thead.innerHTML = '<tr style="background:var(--warn-bg)">'
+    + '<th style="color:var(--warn-text)">⚠ Pendientes de ' + prevMonthLabel + '</th>'
+    + '<th class="num" style="color:var(--warn-text)">Monto</th>'
+    + '<th style="color:var(--warn-text)">Origen</th>'
+    + '<th colspan="2"></th>'
+    + '</tr>';
+  table.appendChild(thead);
+
+  var tbody = document.createElement('tbody');
+  pendienteRows.forEach(function(r) {
+    var tr = document.createElement('tr');
+    tr.className = 'exp-row';
+
+    var tdName = document.createElement('td');
+    tdName.style.paddingLeft = '14px';
+    tdName.textContent = r.cat.name + ' — Pendiente';
+    tr.appendChild(tdName);
+
+    var tdAmt = document.createElement('td');
+    tdAmt.className = 'carryover-amt';
+    tdAmt.textContent = fmtS(r.carry);
+    tr.appendChild(tdAmt);
+
+    var tdOrig = document.createElement('td');
+    tdOrig.style.cssText = 'color:var(--warn-text);font-size:12px';
+    tdOrig.textContent = 'Saldo sin pagar de ' + MES_F[r.prevM] + ' ' + r.prevY;
+    tr.appendChild(tdOrig);
+
+    // Actions column
+    var tdAct = document.createElement('td');
+    tdAct.setAttribute('colspan', '2');
+    tdAct.style.textAlign = 'right';
+    tdAct.style.whiteSpace = 'nowrap';
+
+    var editBtn = document.createElement('button');
+    editBtn.className = 'btn sm';
+    editBtn.textContent = '✏ Editar';
+    editBtn.style.marginRight = '6px';
+    (function(catId, prevY, prevM, carry) {
+      editBtn.addEventListener('click', function() {
+        openEditPendiente(catId, prevY, prevM, carry);
+      });
+    })(r.cat.id, r.prevY, r.prevM, r.carry);
+
+    var delBtn = document.createElement('button');
+    delBtn.className = 'btn sm danger';
+    delBtn.textContent = '✕ Eliminar';
+    (function(catId, prevY, prevM) {
+      delBtn.addEventListener('click', function() {
+        deletePendiente(catId, prevY, prevM);
+      });
+    })(r.cat.id, r.prevY, r.prevM);
+
+    tdAct.appendChild(editBtn);
+    tdAct.appendChild(delBtn);
+    tr.appendChild(tdAct);
+
+    tbody.appendChild(tr);
+  });
+
+  // Total row
+  var totalTr = document.createElement('tr');
+  totalTr.className = 'total-row';
+  totalTr.style.background = 'var(--warn-bg)';
+  totalTr.innerHTML = '<td style="color:var(--warn-text)">Total pendientes</td>'
+    + '<td class="num" style="color:var(--warn-text)">' + fmtS(totalCarryover) + '</td>'
+    + '<td colspan="3"></td>';
+  tbody.appendChild(totalTr);
+
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  placeholder.replaceWith(wrap);
+}
+
 function catPaidTotal(catId, y, m) {
   return getCatPayments(catId, y, m).reduce(function(t, p) { return t + p.amount; }, 0);
 }
@@ -551,6 +711,12 @@ function catCarryover(catId, y, m, depth) {
   if (depth >= 24) return 0;
   var prevM = m === 0 ? 11 : m - 1;
   var prevY = m === 0 ? y - 1 : y;
+  // Check for a manual override on the PREVIOUS month's pendiente
+  var overrideKey = prevY + '-' + prevM + '-' + catId;
+  if (S.pendienteOverrides && overrideKey in S.pendienteOverrides) {
+    var ov = S.pendienteOverrides[overrideKey];
+    return (ov === null || ov < 0) ? 0 : ov;
+  }
   var prevBase = catMonthTotal(catId, prevY, prevM);
   if (prevBase === 0 && depth === 0) return 0; // no budget in prev month at all
   var prevCarry = catCarryover(catId, prevY, prevM, depth + 1);
@@ -688,6 +854,7 @@ function render() {
   }
 
   app.innerHTML = html;
+  buildPendientesSection(S.year, S.month);
   if (S.modal === 'expense') renderExpModal();
   else if (S.modal === 'cats') renderCatsModal();
   else if (S.modal === 'importexport') renderImportExportModal();
@@ -776,38 +943,10 @@ function renderMonthTable(y, m) {
     <td class="${'diff-'+td.cls}" colspan="2">${totalPaid > 0 ? td.txt : '—'}</td>
   </tr>`;
 
-  // Build pendientes section
+  // Build pendientes section — placeholder, filled by DOM after render
   let pendientesHtml = '';
   if (pendienteRows.length > 0) {
-    const prevMonthLabel = MES_F[pendienteRows[0].prevM] + ' ' + pendienteRows[0].prevY;
-    let pRows = '';
-    pendienteRows.forEach(r => {
-      pRows += `<tr class="exp-row">
-        <td style="padding-left:14px">${r.cat.name} — Pendiente</td>
-        <td class="carryover-amt">${fmtS(r.carry)}</td>
-        <td style="color:var(--warn-text);font-size:12px">Saldo sin pagar de ${MES_F[r.prevM]} ${r.prevY}</td>
-        <td colspan="2"></td>
-      </tr>`;
-    });
-    pendientesHtml = `
-    <div class="table-wrap" style="margin-top:10px;border-color:var(--warn-text)">
-      <table>
-        <thead><tr style="background:var(--warn-bg)">
-          <th style="color:var(--warn-text)">⚠ Pendientes de ${prevMonthLabel}</th>
-          <th class="num" style="color:var(--warn-text)">Monto</th>
-          <th style="color:var(--warn-text)">Origen</th>
-          <th colspan="2"></th>
-        </tr></thead>
-        <tbody>
-          ${pRows}
-          <tr class="total-row" style="background:var(--warn-bg)">
-            <td style="color:var(--warn-text)">Total pendientes</td>
-            <td class="num" style="color:var(--warn-text)">${fmtS(totalCarryover)}</td>
-            <td colspan="3"></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>`;
+    pendientesHtml = '<div id="pendientes-section"></div>';
   }
 
   return `<div class="table-wrap"><table>
@@ -2065,7 +2204,7 @@ async function startup() {
           applySync(remote);
           // Also persist data locally
           try { localStorage.setItem('gastos_html_v2', JSON.stringify({
-            categories: S.categories, expenses: S.expenses, payments: S.payments
+            categories: S.categories, expenses: S.expenses, payments: S.payments, pendienteOverrides: S.pendienteOverrides
           })); } catch(e) {}
           const t = new Date().toLocaleTimeString('es-MX', {hour:'2-digit',minute:'2-digit'});
           localStorage.setItem('gastos_last_sync', t);
